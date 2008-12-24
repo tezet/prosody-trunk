@@ -1,0 +1,180 @@
+#!/usr/bin/env lua
+-- Prosody IM v0.2
+-- Copyright (C) 2008 Matthew Wild
+-- Copyright (C) 2008 Waqas Hussain
+-- 
+-- This program is free software; you can redistribute it and/or
+-- modify it under the terms of the GNU General Public License
+-- as published by the Free Software Foundation; either version 2
+-- of the License, or (at your option) any later version.
+-- 
+-- This program is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-- GNU General Public License for more details.
+-- 
+-- You should have received a copy of the GNU General Public License
+-- along with this program; if not, write to the Free Software
+-- Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+--
+
+-- Config here --
+
+CFG_SOURCEDIR=nil;
+CFG_CONFIGDIR=os.getenv("PROSODY_CFGDIR");
+CFG_PLUGINDIR=nil;
+CFG_DATADIR=os.getenv("PROSODY_DATADIR");
+
+-- -- -- -- -- --
+
+if CFG_SOURCEDIR then
+	package.path = CFG_SOURCEDIR.."/?.lua;"..package.path
+	package.cpath = CFG_SOURCEDIR.."/?.so;"..package.cpath
+end
+
+if CFG_DATADIR then
+	if os.getenv("HOME") then
+		CFG_DATADIR = CFG_DATADIR:gsub("^~", os.getenv("HOME"));
+	end
+end
+
+-- Required to be able to find packages installed with luarocks
+pcall(require, "luarocks.require")
+
+
+config = require "core.configmanager"
+log = require "util.logger".init("general");
+
+-- Disable log output, needs to read from config
+-- require "util.logger".setwriter(function () end);
+
+do
+	-- TODO: Check for other formats when we add support for them
+	-- Use lfs? Make a new conf/ dir?
+	local ok, err = config.load((CFG_CONFIGDIR or ".").."/prosody.cfg.lua");
+	if not ok then
+		log("error", "Couldn't load config file: %s", err);
+		log("info", "Falling back to old config file format...")
+		ok, err = pcall(dofile, "lxmppd.cfg");
+		if not ok then
+			log("error", "Old config format loading failed too: %s", err);
+		else
+			for _, host in ipairs(_G.config.hosts) do
+				config.set(host, "core", "defined", true);
+			end
+			
+			config.set("*", "core", "modules_enabled", _G.config.modules);
+			config.set("*", "core", "ssl", _G.config.ssl_ctx);
+		end
+	end
+end
+
+local server = require "net.server"
+
+require "util.dependencies"
+
+-- Maps connections to sessions --
+sessions = {};
+hosts = {};
+
+-- Load and initialise core modules --
+
+require "util.import"
+require "core.xmlhandlers"
+require "core.rostermanager"
+require "core.offlinemessage"
+require "core.eventmanager"
+require "core.hostmanager"
+require "core.modulemanager"
+require "core.usermanager"
+require "core.sessionmanager"
+require "core.stanza_router"
+
+--[[
+pcall(require, "remdebug.engine");
+if remdebug then remdebug.engine.start() end
+]]
+
+local cl = require "net.connlisteners";
+
+require "util.stanza"
+require "util.jid"
+
+------------------------------------------------------------------------
+
+
+------------- Begin code without a home ---------------------
+
+local data_path = config.get("*", "core", "data_path") or CFG_DATADIR or "data";
+require "util.datamanager".set_data_path(data_path);
+
+
+local path_separator = "/"; if os.getenv("WINDIR") then path_separator = "\\" end
+local _mkdir = {}
+function mkdir(path)
+	path = path:gsub("/", path_separator);
+	local x = io.popen("mkdir \""..path.."\" 2>&1"):read("*a");
+end
+function encode(s) return s and (s:gsub("%W", function (c) return string.format("%%%02x", c:byte()); end)); end
+function mkdirs(host)
+	if not _mkdir[host] then
+		local host_dir = string.format("%s/%s", data_path, encode(host));
+		mkdir(host_dir);
+		mkdir(host_dir.."/accounts");
+		mkdir(host_dir.."/vcard");
+		mkdir(host_dir.."/roster");
+		mkdir(host_dir.."/private");
+		mkdir(host_dir.."/offline");
+		_mkdir[host] = true;
+	end
+end
+mkdir(data_path);
+
+eventmanager.add_event_hook("host-activated", mkdirs);
+
+----------- End of out-of-place code --------------
+
+eventmanager.fire_event("server-starting");
+
+
+-- setup error handling
+setmetatable(_G, { __index = function (t, k) error("Attempt to read a non-existent global '"..k.."'", 2); end, __newindex = function (t, k, v) error("Attempt to set a global: "..tostring(k).." = "..tostring(v), 2); end });
+
+local global_ssl_ctx = config.get("*", "core", "ssl");
+if global_ssl_ctx then
+	local default_ssl_ctx = { mode = "server", protocol = "sslv23", capath = "/etc/ssl/certs", verify = "none"; };
+	setmetatable(global_ssl_ctx, { __index = default_ssl_ctx });
+end
+
+-- start listening on sockets
+local function do_ports(option, listener, default, key)
+	local ports = config.get("*", "core", option) or default;
+	--if type(ports) == "number" then ports = {ports} end;
+	if type(ports) ~= "table" then
+		log("error", "core."..option.." is not a table");
+	else
+		for _, port in ipairs(ports) do
+			if type(port) ~= "number" then
+				log("error", "Non-numeric "..option..": "..tostring(port));
+			else
+				cl.start(listener, { ssl = global_ssl_ctx, [key] = port });
+			end
+		end
+	end
+end
+
+do_ports("c2s_ports", "xmppclient", {5222}, "port");
+do_ports("s2s_ports", "xmppserver", {5269}, "port");
+do_ports("legacy_ssl_ports", "xmppclient", {}, "legacy_ssl_port");
+
+if config.get("*", "core", "console_enabled") then
+	if cl.get("console") then
+		cl.start("console")
+	else
+		log("error", "Console is enabled, but the console module appears not to be loaded");
+	end
+end
+
+eventmanager.fire_event("server-started");
+
+server.loop();
