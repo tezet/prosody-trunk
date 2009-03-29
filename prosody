@@ -1,0 +1,172 @@
+#!/usr/bin/env lua
+-- Prosody IM v0.4
+-- Copyright (C) 2008-2009 Matthew Wild
+-- Copyright (C) 2008-2009 Waqas Hussain
+-- 
+-- This project is MIT/X11 licensed. Please see the
+-- COPYING file in the source package for more information.
+--
+
+-- Will be modified by configure script if run --
+
+CFG_SOURCEDIR=nil;
+CFG_CONFIGDIR=os.getenv("PROSODY_CFGDIR");
+CFG_PLUGINDIR=nil;
+CFG_DATADIR=os.getenv("PROSODY_DATADIR");
+
+-- -- -- -- -- -- -- ---- -- -- -- -- -- -- -- --
+
+if CFG_SOURCEDIR then
+	package.path = CFG_SOURCEDIR.."/?.lua;"..package.path
+	package.cpath = CFG_SOURCEDIR.."/?.so;"..package.cpath
+end
+
+if CFG_DATADIR then
+	if os.getenv("HOME") then
+		CFG_DATADIR = CFG_DATADIR:gsub("^~", os.getenv("HOME"));
+	end
+end
+
+-- Required to be able to find packages installed with luarocks
+pcall(require, "luarocks.require")
+
+
+config = require "core.configmanager"
+
+do
+	-- TODO: Check for other formats when we add support for them
+	-- Use lfs? Make a new conf/ dir?
+	local ok, level, err = config.load((CFG_CONFIGDIR or ".").."/prosody.cfg.lua");
+	if not ok then
+		print("");
+		print("**************************");
+		if level == "parser" then
+			print("A problem occured while reading the config file "..(CFG_CONFIGDIR or ".").."/prosody.cfg.lua");
+			local err_line, err_message = tostring(err):match("%[string .-%]:(%d*): (.*)");
+			print("Error"..(err_line and (" on line "..err_line) or "")..": "..(err_message or tostring(err)));
+			print("");
+		elseif level == "file" then
+			print("Prosody was unable to find the configuration file.");
+			print("We looked for: "..(CFG_CONFIGDIR or ".").."/prosody.cfg.lua");
+			print("A sample config file is included in the Prosody download called prosody.cfg.lua.dist");
+			print("Copy or rename it to prosody.cfg.lua and edit as necessary.");
+		end
+		print("More help on configuring Prosody can be found at http://prosody.im/doc/configure");
+		print("Good luck!");
+		print("**************************");
+		print("");
+		os.exit(1);
+	end
+end
+
+log = require "util.logger".init("general");
+
+-- Disable log output, needs to read from config
+-- require "util.logger".setwriter(function () end);
+
+require "util.dependencies"
+
+local server = require "net.server"
+
+
+-- Maps connections to sessions --
+sessions = {};
+hosts = {};
+
+-- Load and initialise core modules --
+
+require "util.import"
+require "core.xmlhandlers"
+require "core.rostermanager"
+require "core.eventmanager"
+require "core.hostmanager"
+require "core.modulemanager"
+require "core.usermanager"
+require "core.sessionmanager"
+require "core.stanza_router"
+
+-- Commented to protect us from 
+-- the second kind of people
+--[[ 
+pcall(require, "remdebug.engine");
+if remdebug then remdebug.engine.start() end
+]]
+
+local cl = require "net.connlisteners";
+
+require "util.stanza"
+require "util.jid"
+
+------------------------------------------------------------------------
+
+
+------------- Begin code without a home ---------------------
+
+local data_path = config.get("*", "core", "data_path") or CFG_DATADIR or "data";
+require "util.datamanager".set_data_path(data_path);
+
+----------- End of out-of-place code --------------
+
+
+eventmanager.fire_event("server-starting");
+
+
+-- start listening on sockets
+function net_activate_ports(option, listener, default, conntype)
+	local ports = config.get("*", "core", option) or default;
+	if type(ports) == "number" then ports = {ports} end;
+	
+	if type(ports) ~= "table" then
+		log("error", "core."..option.." is not a table");
+	else
+		for _, port in ipairs(ports) do
+			if type(port) ~= "number" then
+				log("error", "Non-numeric "..option..": "..tostring(port));
+			else
+				cl.start(listener, { ssl = conntype ~= "tcp" and global_ssl_ctx, port = port, type = conntype });
+			end
+		end
+	end
+end
+
+net_activate_ports("c2s_ports", "xmppclient", {5222}, (global_ssl_ctx and "tls") or "tcp");
+net_activate_ports("s2s_ports", "xmppserver", {5269}, "tcp");
+net_activate_ports("legacy_ssl_ports", "xmppclient", {}, "ssl");
+
+if config.get("*", "core", "console_enabled") then
+	if cl.get("console") then
+		cl.start("console", { interface = config.get("*", "core", "console_interface") or "127.0.0.1" })
+	else
+		log("error", "Console is enabled, but the console module appears not to be loaded");
+	end
+end
+
+-- setup error handling
+setmetatable(_G, { __index = function (t, k) error("Attempt to read a non-existent global '"..k.."'", 2); end, __newindex = function (t, k, v) error("Attempt to set a global: "..tostring(k).." = "..tostring(v), 2); end });
+
+local global_ssl_ctx = config.get("*", "core", "ssl");
+if global_ssl_ctx then
+	local default_ssl_ctx = { mode = "server", protocol = "sslv23", capath = "/etc/ssl/certs", verify = "none"; };
+	setmetatable(global_ssl_ctx, { __index = default_ssl_ctx });
+end
+
+eventmanager.fire_event("server-started");
+
+local quitting;
+while not quitting do
+	xpcall(server.loop, function (err)
+					if err:match("%d*: interrupted!$") then
+						quitting = true;
+						return;
+					end
+
+					log("error", "Top-level error, please report:\n%s", tostring(err));
+
+					local traceback = debug.traceback("", 2);
+					if traceback then
+						log("error", "%s", traceback);
+					end
+					
+					eventmanager.fire_event("very-bad-error", "*", err, traceback);
+				end);
+end
