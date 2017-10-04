@@ -1,3 +1,6 @@
+local t_unpack = table.unpack or unpack; -- luacheck: ignore 113
+local time_now = os.time;
+
 local st = require "util.stanza";
 local uuid_generate = require "util.uuid".generate;
 local dataform = require"util.dataforms".new;
@@ -23,7 +26,7 @@ local pubsub_errors = {
 };
 local function pubsub_error_reply(stanza, error)
 	local e = pubsub_errors[error];
-	local reply = st.error_reply(stanza, unpack(e, 1, 3));
+	local reply = st.error_reply(stanza, t_unpack(e, 1, 3));
 	if e[4] then
 		reply:tag(e[4], { xmlns = xmlns_pubsub_errors }):up();
 	end
@@ -31,7 +34,7 @@ local function pubsub_error_reply(stanza, error)
 end
 _M.pubsub_error_reply = pubsub_error_reply;
 
-local node_config_form = require"util.dataforms".new {
+local node_config_form = dataform {
 	{
 		type = "hidden";
 		name = "FORM_TYPE";
@@ -47,13 +50,13 @@ local node_config_form = require"util.dataforms".new {
 function handlers.get_items(origin, stanza, items, service)
 	local node = items.attr.node;
 	local item = items:get_child("item");
-	local id = item and item.attr.id;
+	local item_id = item and item.attr.id;
 
 	if not node then
 		origin.send(pubsub_error_reply(stanza, "nodeid-required"));
 		return true;
 	end
-	local ok, results = service:get_items(node, stanza.attr.from, id);
+	local ok, results = service:get_items(node, stanza.attr.from, item_id);
 	if not ok then
 		origin.send(pubsub_error_reply(stanza, results));
 		return true;
@@ -122,7 +125,7 @@ end
 function handlers.set_delete(origin, stanza, delete, service)
 	local node = delete.attr.node;
 
-	local reply, notifier;
+	local reply;
 	if not node then
 		origin.send(pubsub_error_reply(stanza, "nodeid-required"));
 		return true;
@@ -313,5 +316,79 @@ function handlers.get_default(origin, stanza, default, service)
 	origin.send(reply);
 	return true;
 end
+
+local function create_encapsulating_item(id, payload, publisher, expose_publisher)
+	local item = st.stanza("item", { id = id, xmlns = xmlns_pubsub });
+	item:add_child(payload);
+	if expose_publisher then
+		item.attr.publisher = publisher;
+	end
+	return item;
+end
+
+local function simple_itemstore(archive, config, user, node, expose_publisher)
+	module:log("debug", "Creation of itemstore for node %s with config %s", node, config);
+	local get_set = {};
+	function get_set:items()
+		local store = self.store;
+		local data, err = archive:find(user, { with = node });
+		if not data then
+			module:log("error", "Unable to get items: %s", err);
+			return true;
+		end
+		module:log("debug", "Listed items %s from store %s", data, store);
+		return function()
+			local id, payload, when, publisher = data();
+			if id == nil then
+				return;
+			end
+			local item = create_encapsulating_item(id, payload, publisher, expose_publisher);
+			return id, item;
+		end;
+	end
+	function get_set:get(key)
+		local store = self.store;
+		local data, err = archive:find(user, {
+			with = node;
+			key = key;
+		});
+		if not data then
+			module:log("error", "Unable to get item: %s", err);
+			return nil, err;
+		end
+		-- Workaround for buggy SQL drivers which require iterating until we get a nil.
+		local id, payload, when, publisher;
+		for a, b, c, d in data() do
+			id, payload, when, publisher = a, b, c, d;
+		end
+		module:log("debug", "Get item %s (published at %s by %s) from store %s", id, when, publisher, store);
+		if id == nil then
+			return nil;
+		end
+		return create_encapsulating_item(id, payload, publisher, expose_publisher);
+	end
+	function get_set:set(key, value)
+		local store = self.store;
+		module:log("debug", "Set item %s to %s for %s in store %s", key, value, node, store);
+		local data, err;
+		if value ~= nil then
+			local publisher = value.attr.publisher;
+			local payload = value.tags[1];
+			data, err = archive:append(user, key, payload, time_now(), node);
+		else
+			data, err = archive:delete(user, {
+				key = key;
+				with = node;
+			});
+		end
+		if not data then
+			module:log("error", "Unable to set item: %s", err);
+			return nil, err;
+		end
+		return data;
+	end
+	return setmetatable(get_set, archive);
+end
+_M.simple_itemstore = simple_itemstore;
 
 return _M;
