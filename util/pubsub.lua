@@ -5,7 +5,7 @@ local service = {};
 local service_mt = { __index = service };
 
 local default_config = { __index = {
-	itemstore = function (config) return cache.new(tonumber(config["pubsub#max_items"])) end;
+	itemstore = function (config, _) return cache.new(tonumber(config["pubsub#max_items"])) end;
 	broadcaster = function () end;
 	get_affiliation = function () end;
 	capabilities = {};
@@ -223,7 +223,7 @@ function service:create(node, actor, options)
 		config = setmetatable(options or {}, {__index=self.node_defaults});
 		affiliations = {};
 	};
-	self.data[node] = self.config.itemstore(self.nodes[node].config);
+	self.data[node] = self.config.itemstore(self.nodes[node].config, node);
 	self.events.fire_event("node-created", { node = node, actor = actor });
 	local ok, err = self:set_affiliation(node, true, actor, "owner");
 	if not ok then
@@ -268,10 +268,14 @@ function service:publish(node, actor, id, item)
 		node_obj = self.nodes[node];
 	end
 	local node_data = self.data[node];
+	if type(actor) == "string" then
+		item.attr.publisher = actor;
+	end
 	local ok = node_data:set(id, item);
 	if not ok then
 		return nil, "internal-server-error";
 	end
+	if type(ok) == "string" then id = ok; end
 	self.events.fire_event("item-published", { node = node, actor = actor, id = id, item = item });
 	self.config.broadcaster("items", node, node_obj.subscribers, item, actor);
 	return true;
@@ -308,7 +312,7 @@ function service:purge(node, actor, notify)
 	if not node_obj then
 		return false, "item-not-found";
 	end
-	self.data[node] = self.config.itemstore(self.nodes[node].config);
+	self.data[node] = self.config.itemstore(self.nodes[node].config, node);
 	self.events.fire_event("node-purged", { node = node, actor = actor });
 	if notify then
 		self.config.broadcaster("purge", node, node_obj.subscribers);
@@ -424,7 +428,7 @@ function service:set_node_config(node, actor, new_config)
 	for k,v in pairs(new_config) do
 		node_obj.config[k] = v;
 	end
-	local new_data = self.config.itemstore(self.nodes[node].config);
+	local new_data = self.config.itemstore(self.nodes[node].config, node);
 	for key, value in self.data[node]:items() do
 		new_data:set(key, value);
 	end
