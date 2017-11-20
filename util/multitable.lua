@@ -9,7 +9,7 @@
 local select = select;
 local t_insert = table.insert;
 local pairs, next, type = pairs, next, type;
-local unpack = table.unpack or unpack; --luacheck: ignore 113
+local unpack = table.unpack or unpack; --luacheck: ignore 113 143
 
 local _ENV = nil;
 
@@ -132,7 +132,7 @@ local function iter(self, ...)
 	local maxdepth = select("#", ...);
 	local stack = { self.data };
 	local keys = { };
-	local function it(self)
+	local function it(self) -- luacheck: ignore 432/self
 		local depth = #stack;
 		local key = next(stack[depth], keys[depth]);
 		if key == nil then -- Go up the stack
