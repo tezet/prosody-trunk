@@ -13,6 +13,10 @@ files["core/"] = {
 	read_globals = { "prosody", "hosts" };
 	globals = { "prosody.hosts.?", "hosts.?" };
 }
+files["util/"] = {
+	-- Ignore unwrapped license text
+	max_comment_line_length = false;
+}
 files["plugins/"] = {
 	read_globals = {
 		-- Module instance
@@ -89,16 +93,6 @@ files["plugins/"] = {
 		"module.environment",
 	};
 }
-files["tests/"] = {
-	read_globals = {
-		"testlib_new_env",
-		"assert_equal",
-		"assert_table",
-		"assert_function",
-		"assert_string",
-		"assert_boolean",
-		"assert_is",
-		"assert_is_not",
-		"runtest",
-	};
+files["spec/"] = {
+	std = "+busted"
 }
