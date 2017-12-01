@@ -21,19 +21,22 @@
 
 #define _DEFAULT_SOURCE
 
-#include "lualib.h"
-#include "lauxlib.h"
-
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
+#include "lualib.h"
+#include "lauxlib.h"
 
 #if defined(WITH_GETRANDOM)
 
 #ifndef __GLIBC_PREREQ
+/* Not compiled with glibc at all */
 #define __GLIBC_PREREQ(a,b) 0
 #endif
 
 #if ! __GLIBC_PREREQ(2,25)
+/* Not compiled with a glibc that provides getrandom() */
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -49,11 +52,9 @@ int getrandom(void *buf, size_t buflen, unsigned int flags) {
 #include <sys/random.h>
 #endif
 
-#elif defined(WITH_ARC4RANDOM)
-#include <stdlib.h>
 #elif defined(WITH_OPENSSL)
 #include <openssl/rand.h>
-#else
+#elif ! defined(WITH_ARC4RANDOM)
 #error util.crand compiled without a random source
 #endif
 
@@ -78,6 +79,7 @@ int Lrandom(lua_State *L) {
 	arc4random_buf(buf, len);
 	ret = len;
 #elif defined(WITH_OPENSSL)
+
 	if(!RAND_status()) {
 		lua_pushliteral(L, "OpenSSL PRNG not seeded");
 		return lua_error(L);
