@@ -14,7 +14,7 @@ local core_process_stanza = prosody.core_process_stanza;
 
 local tostring, type = tostring, type;
 local t_insert = table.insert;
-local xpcall, traceback = xpcall, debug.traceback;
+local traceback = debug.traceback;
 
 local add_task = require "util.timer".add_task;
 local st = require "util.stanza";
@@ -26,6 +26,7 @@ local s2s_new_outgoing = require "core.s2smanager".new_outgoing;
 local s2s_destroy_session = require "core.s2smanager".destroy_session;
 local uuid_gen = require "util.uuid".generate;
 local fire_global_event = prosody.events.fire_event;
+local runner = require "util.async".runner;
 
 local s2sout = module:require("s2sout");
 
@@ -40,6 +41,8 @@ local require_encryption = module:get_option_boolean("s2s_require_encryption", f
 local measure_connections = module:measure("connections", "amount");
 
 local sessions = module:shared("sessions");
+
+local runner_callbacks = {};
 
 local log = module._log;
 
@@ -60,10 +63,13 @@ local function bounce_sendq(session, reason)
 	session.log("info", "Sending error replies for "..#sendq.." queued stanzas because of failed outgoing connection to "..tostring(session.to_host));
 	local dummy = {
 		type = "s2sin";
-		send = function(s)
+		send = function ()
 			(session.log or log)("error", "Replying to to an s2s error reply, please report this! Traceback: %s", traceback());
 		end;
 		dummy = true;
+		close = function ()
+			(session.log or log)("error", "Attempting to close the dummy origin of s2s error replies, please report this! Traceback: %s", traceback());
+		end;
 	};
 	for i, data in ipairs(sendq) do
 		local reply = data[2];
@@ -100,8 +106,15 @@ function route_to_existing_session(event)
 			(host.log or log)("debug", "trying to send over unauthed s2sout to "..to_host);
 
 			-- Queue stanza until we are able to send it
-			if host.sendq then t_insert(host.sendq, {tostring(stanza), stanza.attr.type ~= "error" and stanza.attr.type ~= "result" and st.reply(stanza)});
-			else host.sendq = { {tostring(stanza), stanza.attr.type ~= "error" and stanza.attr.type ~= "result" and st.reply(stanza)} }; end
+			local queued_item = {
+				tostring(stanza),
+				stanza.attr.type ~= "error" and stanza.attr.type ~= "result" and st.reply(stanza);
+			};
+			if host.sendq then
+				t_insert(host.sendq, queued_item);
+			else
+				host.sendq = { queued_item };
+			end
 			host.log("debug", "stanza [%s] queued ", stanza.name);
 			return true;
 		elseif host.type == "local" or host.type == "component" then
@@ -151,7 +164,7 @@ module:hook("s2s-read-timeout", keepalive, -1);
 
 function module.add_host(module)
 	if module:get_option_boolean("disallow_s2s", false) then
-		module:log("warn", "The 'disallow_s2s' config option is deprecated, please see http://prosody.im/doc/s2s#disabling");
+		module:log("warn", "The 'disallow_s2s' config option is deprecated, please see https://prosody.im/doc/s2s#disabling");
 		return nil, "This host has disallow_s2s set";
 	end
 	module:hook("route/remote", route_to_existing_session, -1);
@@ -264,11 +277,21 @@ end
 
 --- XMPP stream event handlers
 
-local stream_callbacks = { default_ns = "jabber:server", handlestanza =  core_process_stanza };
+local stream_callbacks = { default_ns = "jabber:server" };
+
+function stream_callbacks.handlestanza(session, stanza)
+	stanza = session.filter("stanzas/in", stanza);
+	session.thread:run(stanza);
+end
 
 local xmlns_xmpp_streams = "urn:ietf:params:xml:ns:xmpp-streams";
 
 function stream_callbacks.streamopened(session, attr)
+	-- run _streamopened in async context
+	session.thread:run({ attr = attr });
+end
+
+function stream_callbacks._streamopened(session, attr)
 	session.version = tonumber(attr.version) or 0;
 
 	-- TODO: Rename session.secure to session.encrypted
@@ -440,14 +463,6 @@ function stream_callbacks.error(session, error, data)
 	end
 end
 
-local function handleerr(err) log("error", "Traceback[s2s]: %s", traceback(tostring(err), 2)); end
-function stream_callbacks.handlestanza(session, stanza)
-	stanza = session.filter("stanzas/in", stanza);
-	if stanza then
-		return xpcall(function () return core_process_stanza(session, stanza) end, handleerr);
-	end
-end
-
 local listener = {};
 
 --- Session methods
@@ -522,6 +537,15 @@ end
 -- Session initialization logic shared by incoming and outgoing
 local function initialize_session(session)
 	local stream = new_xmpp_stream(session, stream_callbacks);
+
+	session.thread = runner(function (stanza)
+		if stanza.name == nil then
+			stream_callbacks._streamopened(session, stanza.attr);
+		else
+			core_process_stanza(session, stanza);
+		end
+	end, runner_callbacks, session);
+
 	local log = session.log or log;
 	session.stream = stream;
 
@@ -583,6 +607,20 @@ local function initialize_session(session)
 		session.from_host or "(unknown)", session.to_host or "(unknown)");
 		session:close("connection-timeout");
 	end);
+end
+
+function runner_callbacks:ready()
+	self.data.log("debug", "Runner %s ready (%s)", self.thread, coroutine.status(self.thread));
+	self.data.conn:resume();
+end
+
+function runner_callbacks:waiting()
+	self.data.log("debug", "Runner %s waiting (%s)", self.thread, coroutine.status(self.thread));
+	self.data.conn:pause();
+end
+
+function runner_callbacks:error(err)
+	(self.data.log or log)("error", "Traceback[s2s]: %s", err);
 end
 
 function listener.onconnect(conn)

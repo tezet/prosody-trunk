@@ -223,7 +223,8 @@ function interface_mt:_destroy()  -- close this interface + events and call last
 		_ = self.eventsession and self.eventsession:close( )
 		_ = self.eventwritetimeout and self.eventwritetimeout:close( )
 		_ = self.eventreadtimeout and self.eventreadtimeout:close( )
-		_ = self.ondisconnect and self:ondisconnect( self.fatalerror ~= "client to close" and self.fatalerror)  -- call ondisconnect listener (wont be the case if handshake failed on connect)
+		-- call ondisconnect listener (wont be the case if handshake failed on connect)
+		_ = self.ondisconnect and self:ondisconnect( self.fatalerror ~= "client to close" and self.fatalerror)
 		_ = self.conn and self.conn:close( ) -- close connection
 		_ = self._server and self._server:counter(-1);
 		self.eventread, self.eventwrite = nil, nil
@@ -773,7 +774,7 @@ local function setquitting(yes)
 end
 
 local function get_backend()
-	return base:method();
+	return "libevent " .. base:method();
 end
 
 -- We need to hold onto the events to stop them
@@ -811,6 +812,20 @@ local function link(sender, receiver, buffersize)
 	sender:set_mode("*a");
 end
 
+local function add_task(delay, callback)
+	local event_handle;
+	event_handle = base:addevent(nil, 0, function ()
+		local ret = callback(socket_gettime());
+		if ret then
+			return 0, ret;
+		elseif event_handle then
+			return -1;
+		end
+	end
+	, delay);
+	return event_handle;
+end
+
 return {
 	cfg = cfg,
 	base = base,
@@ -826,6 +841,7 @@ return {
 	closeall = closeallservers,
 	get_backend = get_backend,
 	hook_signal = hook_signal,
+	add_task = add_task,
 
 	__NAME = SCRIPT_NAME,
 	__DATE = LAST_MODIFIED,
