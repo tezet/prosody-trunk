@@ -374,7 +374,35 @@ function archive_store:delete(username, query)
 		end
 		archive_where(query, args, where);
 		archive_where_id_range(query, args, where);
-		sql_query = sql_query:format(t_concat(where, " AND "));
+		if query.truncate == nil then
+			sql_query = sql_query:format(t_concat(where, " AND "));
+		else
+			args[#args+1] = query.truncate;
+			local unlimited = "ALL";
+			if engine.params.driver == "SQLite3" then
+				sql_query = [[
+				DELETE FROM "prosodyarchive"
+				WHERE %s
+				ORDER BY "sort_id" %s
+				LIMIT %s OFFSET ?;
+				]];
+				unlimited = "-1";
+			else
+				sql_query = [[
+				DELETE FROM "prosodyarchive"
+				WHERE "sort_id" IN (
+					SELECT "sort_id" FROM "prosodyarchive"
+					WHERE %s
+					ORDER BY "sort_id" %s
+					LIMIT %s OFFSET ?
+				);]];
+				if engine.params.driver == "MySQL" then
+					unlimited = "18446744073709551615";
+				end
+			end
+			sql_query = string.format(sql_query, t_concat(where, " AND "),
+				query.reverse and "ASC" or "DESC", unlimited);
+		end
 		return engine:delete(sql_query, unpack(args));
 	end);
 	return ok and stmt:affected(), stmt;
@@ -427,7 +455,7 @@ local function create_table(engine, name) -- luacheck: ignore 431/engine
 	local Table, Column, Index = sql.Table, sql.Column, sql.Index;
 
 	local ProsodyTable = Table {
-		name= name or "prosody";
+		name = "prosody";
 		Column { name="host", type="TEXT", nullable=false };
 		Column { name="user", type="TEXT", nullable=false };
 		Column { name="store", type="TEXT", nullable=false };
@@ -477,7 +505,7 @@ local function upgrade_table(engine, params, apply_changes) -- luacheck: ignore 
 		end);
 		if not success then
 			module:log("error", "Failed to check/upgrade database schema (%s), please see "
-				.."http://prosody.im/doc/mysql for help",
+				.."https://prosody.im/doc/mysql for help",
 				err or "unknown error");
 			return false;
 		end
