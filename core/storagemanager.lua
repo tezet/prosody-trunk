@@ -12,6 +12,7 @@ local log = require "util.logger".init("storagemanager");
 local prosody = prosody;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local olddm = {}; -- maintain old datamanager, for backwards compatibility
 for k,v in pairs(datamanager) do olddm[k] = v; end
@@ -137,7 +138,7 @@ local map_shim_mt = {
 	};
 }
 
-local open;
+local open; -- forward declaration
 
 local function create_map_shim(host, store)
 	local keyval_store, err = open(host, store, "keyval");
