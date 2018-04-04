@@ -26,6 +26,7 @@ local initialize_filters = require "util.filters".initialize;
 local gettime = require "socket".gettime;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local function new_session(conn)
 	local session = { conn = conn, type = "c2s_unauthed", conntime = gettime() };
@@ -73,6 +74,7 @@ local function retire_session(session)
 
 	function session.send(data) log("debug", "Discarding data sent to resting session: %s", tostring(data)); return false; end
 	function session.data(data) log("debug", "Discarding data received from resting session: %s", tostring(data)); end
+	session.thread = { run = function (_, data) return session.data(data) end };
 	return setmetatable(session, resting_session);
 end
 

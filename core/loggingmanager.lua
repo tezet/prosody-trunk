@@ -24,6 +24,7 @@ _G.log = logger.init("general");
 prosody.log = logger.init("general");
 
 local _ENV = nil;
+-- luacheck: std none
 
 -- The log config used if none specified in the config file (see reload_logging for initialization)
 local default_logging;
@@ -159,7 +160,7 @@ local function reload_logging()
 end
 
 reload_logging();
-prosody.events.add_handler("config-reloaded", reload_logging);
+prosody.events.add_handler("reopen-log-files", reload_logging);
 
 --- Definition of built-in logging sinks ---
 

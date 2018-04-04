@@ -1,19 +1,38 @@
 cache = true
-read_globals = { "prosody", "hosts", "import" }
-globals = { "_M" }
-allow_defined_top = true
-module = true
 unused_secondaries = false
 codes = true
 ignore = { "411/err", "421/err", "411/ok", "421/ok", "211/_ENV", "431/log" }
 
 max_line_length = 150
 
+read_globals = {
+	"prosody",
+	"hosts",
+	"import",
+	"log",
+	"server",
+};
+files["prosody"] = {
+	allow_defined_top = true;
+	module = true;
+}
+files["prosodyctl"] = {
+	allow_defined_top = true;
+	module = true;
+};
 files["core/"] = {
-	read_globals = { "prosody", "hosts" };
-	globals = { "prosody.hosts.?", "hosts.?" };
+	globals = {
+		"prosody.hosts.?",
+		"hosts.?",
+	};
+}
+files["util/"] = {
+	-- Ignore unwrapped license text
+	max_comment_line_length = false;
 }
 files["plugins/"] = {
+	module = true;
+	allow_defined_top = true;
 	read_globals = {
 		-- Module instance
 		"module.name",
@@ -51,8 +70,6 @@ files["plugins/"] = {
 		"module.get_option_set",
 		"module.get_option_string",
 		"module.handle_items",
-		"module.has_feature",
-		"module.has_identity",
 		"module.hook",
 		"module.hook_global",
 		"module.hook_object_event",
@@ -74,10 +91,11 @@ files["plugins/"] = {
 		"module.wrap_event",
 		"module.wrap_global",
 		"module.wrap_object_event",
+
+		-- mod_http API
+		"module.http_url",
 	};
 	globals = {
-		"_M",
-
 		-- Methods that can be set on module API
 		"module.unload",
 		"module.add_host",
@@ -89,16 +107,19 @@ files["plugins/"] = {
 		"module.environment",
 	};
 }
-files["tests/"] = {
-	read_globals = {
-		"testlib_new_env",
-		"assert_equal",
-		"assert_table",
-		"assert_function",
-		"assert_string",
-		"assert_boolean",
-		"assert_is",
-		"assert_is_not",
-		"runtest",
+files["spec/"] = {
+	std = "+busted"
+}
+files["prosody.cfg.lua"] = {
+	ignore = { "131" };
+	globals = { 
+		"Host",
+		"host",
+		"VirtualHost",
+		"Component",
+		"component",
+		"Include",
+		"include",
+		"RunScript"
 	};
 }

@@ -12,30 +12,33 @@ local autocreate_on_subscribe = module:get_option_boolean("autocreate_on_subscri
 local pubsub_disco_name = module:get_option_string("name", "Prosody PubSub Service");
 local expose_publisher = module:get_option_boolean("expose_publisher", false)
 
+local enable_persistence = module:get_option_boolean("experimental_pubsub_item_persistence", false);
+
 local service;
 
 local lib_pubsub = module:require "pubsub";
-local handlers = lib_pubsub.handlers;
-local pubsub_error_reply = lib_pubsub.pubsub_error_reply;
 
 module:depends("disco");
 module:add_identity("pubsub", "service", pubsub_disco_name);
 module:add_feature("http://jabber.org/protocol/pubsub");
 
 function handle_pubsub_iq(event)
-	local origin, stanza = event.origin, event.stanza;
-	local pubsub = stanza.tags[1];
-	local action = pubsub.tags[1];
-	if not action then
-		origin.send(st.error_reply(stanza, "cancel", "bad-request"));
-		return true;
-	end
-	local handler = handlers[stanza.attr.type.."_"..action.name];
-	if handler then
-		handler(origin, stanza, action, service);
-		return true;
-	end
+	return lib_pubsub.handle_pubsub_iq(event, service);
 end
+
+local node_store = module:open_store(module.name.."_nodes");
+
+local function create_simple_itemstore(node_config, node_name)
+	local archive = module:open_store("pubsub_"..node_name, "archive");
+	return lib_pubsub.archive_itemstore(archive, node_config, nil, node_name);
+end
+
+if enable_persistence then
+	module:log("warn", "Item persistence is an experimental feature. Note that ownership information is lost on restart.")
+else
+	create_simple_itemstore = nil;
+end
+
 
 function simple_broadcast(kind, node, jids, item, actor)
 	if item then
@@ -56,41 +59,21 @@ function simple_broadcast(kind, node, jids, item, actor)
 	end
 end
 
+function is_item_stanza(item)
+	return st.is_stanza(item) and item.attr.xmlns == xmlns_pubsub and item.name == "item";
+end
+
 module:hook("iq/host/"..xmlns_pubsub..":pubsub", handle_pubsub_iq);
 module:hook("iq/host/"..xmlns_pubsub_owner..":pubsub", handle_pubsub_iq);
 
-local feature_map = {
-	create = { "create-nodes", "instant-nodes", "item-ids" };
-	retract = { "delete-items", "retract-items" };
-	purge = { "purge-nodes" };
-	publish = { "publish", autocreate_on_publish and "auto-create" };
-	delete = { "delete-nodes" };
-	get_items = { "retrieve-items" };
-	add_subscription = { "subscribe" };
-	get_subscriptions = { "retrieve-subscriptions" };
-	set_configure = { "config-node" };
-	get_default = { "retrieve-default" };
-};
-
-local function add_disco_features_from_service(service)
-	for method, features in pairs(feature_map) do
-		if service[method] then
-			for _, feature in ipairs(features) do
-				if feature then
-					module:add_feature(xmlns_pubsub.."#"..feature);
-				end
-			end
-		end
-	end
-	for affiliation in pairs(service.config.capabilities) do
-		if affiliation ~= "none" and affiliation ~= "owner" then
-			module:add_feature(xmlns_pubsub.."#"..affiliation.."-affiliation");
-		end
+local function add_disco_features_from_service(service) --luacheck: ignore 431/service
+	for feature in lib_pubsub.get_feature_set(service) do
+		module:add_feature(xmlns_pubsub.."#"..feature);
 	end
 end
 
 module:hook("host-disco-info-node", function (event)
-	local stanza, origin, reply, node = event.stanza, event.origin, event.reply, event.node;
+	local stanza, reply, node = event.stanza, event.reply, event.node;
 	local ok, ret = service:get_nodes(stanza.attr.from);
 	if not ok or not ret[node] then
 		return;
@@ -100,7 +83,7 @@ module:hook("host-disco-info-node", function (event)
 end);
 
 module:hook("host-disco-items-node", function (event)
-	local stanza, origin, reply, node = event.stanza, event.origin, event.reply, event.node;
+	local stanza, reply, node = event.stanza, event.reply, event.node;
 	local ok, ret = service:get_items(node, stanza.attr.from);
 	if not ok then
 		return;
@@ -114,8 +97,8 @@ end);
 
 
 module:hook("host-disco-items", function (event)
-	local stanza, origin, reply = event.stanza, event.origin, event.reply;
-	local ok, ret = service:get_nodes(event.stanza.attr.from);
+	local stanza, reply = event.stanza, event.reply;
+	local ok, ret = service:get_nodes(stanza.attr.from);
 	if not ok then
 		return;
 	end
@@ -225,7 +208,10 @@ function module.load()
 		autocreate_on_publish = autocreate_on_publish;
 		autocreate_on_subscribe = autocreate_on_subscribe;
 
+		nodestore = node_store;
+		itemstore = create_simple_itemstore;
 		broadcaster = simple_broadcast;
+		itemcheck = is_item_stanza;
 		get_affiliation = get_affiliation;
 
 		normalize_jid = jid_bare;
