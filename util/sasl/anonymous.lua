@@ -15,6 +15,7 @@
 local generate_uuid = require "util.uuid".generate;
 
 local _ENV = nil;
+-- luacheck: std none
 
 --=========================
 --SASL ANONYMOUS according to RFC 4505
@@ -28,7 +29,7 @@ anonymous:
 	end
 ]]
 
-local function anonymous(self, message)
+local function anonymous(self, message) -- luacheck: ignore 212/message
 	local username;
 	repeat
 		username = generate_uuid();
