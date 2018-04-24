@@ -15,7 +15,7 @@ local pairs = pairs;
 local tostring = tostring;
 local type = type;
 
-local hosts = hosts;
+local hosts = prosody.hosts;
 local bare_sessions = prosody.bare_sessions;
 
 local um_user_exists = require "core.usermanager".user_exists;
@@ -23,6 +23,7 @@ local st = require "util.stanza";
 local storagemanager = require "core.storagemanager";
 
 local _ENV = nil;
+-- luacheck: std none
 
 local save_roster; -- forward declaration
 
