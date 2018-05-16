@@ -15,8 +15,8 @@ local set = require "util.set";
 local new_multitable = require "util.multitable".new;
 local api = require "core.moduleapi"; -- Module API container
 
-local hosts = hosts;
 local prosody = prosody;
+local hosts = prosody.hosts;
 
 local xpcall = xpcall;
 local setmetatable, rawget = setmetatable, rawget;
@@ -38,6 +38,7 @@ local component_inheritable_modules = {"tls", "saslauth", "dialback", "iq", "s2s
 local _G = _G;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local load_modules_for_host, load, unload, reload, get_module, get_items;
 local get_modules, is_loaded, module_has_method, call_module_method;

@@ -27,9 +27,6 @@ module.null = null;
 local escapes = {
 	["\""] = "\\\"", ["\\"] = "\\\\", ["\b"] = "\\b",
 	["\f"] = "\\f", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t"};
-local unescapes = {
-	["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
-	b = "\b", f = "\f", n = "\n", r = "\r", t = "\t"};
 for i=0,31 do
 	local ch = s_char(i);
 	if not escapes[ch] then escapes[ch] = ("\\u%.4X"):format(i); end
@@ -263,8 +260,9 @@ end
 local function _unescape_func(x)
 	x = x:match("%x%x%x%x", 3);
 	if x then
-		--if x >= 0xD800 and x <= 0xDFFF then _unescape_error = true; end -- bad surrogate pair
-		return codepoint_to_utf8(tonumber(x, 16));
+		local codepoint = tonumber(x, 16)
+		if codepoint >= 0xD800 and codepoint <= 0xDFFF then _unescape_error = true; end -- bad surrogate pair
+		return codepoint_to_utf8(codepoint);
 	end
 	_unescape_error = true;
 end
@@ -276,7 +274,7 @@ function _readstring(json, index)
 		--if s:find("[%z-\31]") then return nil, "control char in string"; end
 		-- FIXME handle control characters
 		_unescape_error = nil;
-		--s = s:gsub("\\u[dD][89abAB]%x%x\\u[dD][cdefCDEF]%x%x", _unescape_surrogate_func);
+		s = s:gsub("\\u[dD][89abAB]%x%x\\u[dD][cdefCDEF]%x%x", _unescape_surrogate_func);
 		-- FIXME handle escapes beyond BMP
 		s = s:gsub("\\u.?.?.?.?", _unescape_func);
 		if _unescape_error then return nil, "invalid escape"; end

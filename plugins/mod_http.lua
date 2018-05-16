@@ -50,6 +50,9 @@ end
 
 local function redir_handler(event)
 	event.response.headers.location = event.request.path.."/";
+	if event.request.url.query then
+		event.response.headers.location = event.response.headers.location .. "?" .. event.request.url.query
+	end
 	return 301;
 end
 
@@ -120,7 +123,7 @@ function module.add_host(module)
 					module:log("warn", "App %s added handler twice for '%s', ignoring", app_name, event_name);
 				end
 			else
-				module:log("error", "Invalid route in %s, %q. See http://prosody.im/doc/developers/http#routes", app_name, key);
+				module:log("error", "Invalid route in %s, %q. See https://prosody.im/doc/developers/http#routes", app_name, key);
 			end
 		end
 		local services = portmanager.get_active_services();
@@ -146,6 +149,31 @@ function module.add_host(module)
 		server.remove_host(host);
 	end
 end
+
+local trusted_proxies = module:get_option_set("trusted_proxies", { "127.0.0.1", "::1" })._items;
+
+local function get_ip_from_request(request)
+	local ip = request.conn:ip();
+	local forwarded_for = request.headers.x_forwarded_for;
+	if forwarded_for then
+		forwarded_for = forwarded_for..", "..ip;
+		for forwarded_ip in forwarded_for:gmatch("[^%s,]+") do
+			if not trusted_proxies[forwarded_ip] then
+				ip = forwarded_ip;
+			end
+		end
+	end
+	return ip;
+end
+
+module:wrap_object_event(server._events, false, function (handlers, event_name, event_data)
+	local request = event_data.request;
+	if request then
+		-- Not included in eg http-error events
+		request.ip = get_ip_from_request(request);
+	end
+	return handlers(event_name, event_data);
+end);
 
 module:provides("net", {
 	name = "http";
