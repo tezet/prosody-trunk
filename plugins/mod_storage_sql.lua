@@ -43,12 +43,17 @@ local function deserialize(t, value)
 	elseif t == "boolean" then
 		if value == "true" then return true;
 		elseif value == "false" then return false; end
-	elseif t == "number" then return tonumber(value);
+		return nil, "invalid-boolean";
+	elseif t == "number" then
+		value = tonumber(value);
+		if value then return value; end
+		return nil, "invalid-number";
 	elseif t == "json" then
 		return json.decode(value);
 	elseif t == "xml" then
 		return xml_parse(value);
 	end
+	return nil, "Unhandled value type: "..t;
 end
 
 local host = module.host;
@@ -65,7 +70,8 @@ local function keyval_store_get()
 	for row in engine:select(select_sql, host, user or "", store) do
 		haveany = true;
 		local k = row[1];
-		local v = deserialize(row[2], row[3]);
+		local v, e = deserialize(row[2], row[3]);
+		assert(v ~= nil, e);
 		if k and v then
 			if k ~= "" then result[k] = v; elseif type(v) == "table" then
 				for a,b in pairs(v) do
@@ -154,15 +160,17 @@ function map_store:get(username, key)
 		WHERE "host"=? AND "user"=? AND "store"=? AND "key"=?
 		LIMIT 1
 		]];
-		local data;
+		local data, err;
 		if type(key) == "string" and key ~= "" then
 			for row in engine:select(query, host, username or "", self.store, key) do
-				data = deserialize(row[1], row[2]);
+				data, err = deserialize(row[1], row[2]);
+				assert(data ~= nil, err);
 			end
 			return data;
 		else
 			for row in engine:select(query, host, username or "", self.store, "") do
-				data = deserialize(row[1], row[2]);
+				data, err = deserialize(row[1], row[2]);
+				assert(data ~= nil, err);
 			end
 			return data and data[key] or nil;
 		end
@@ -200,9 +208,10 @@ function map_store:set_keys(username, keydatas)
 					engine:insert(insert_sql, host, username or "", self.store, key, t, value);
 				end
 			else
-				local extradata = {};
+				local extradata, err = {};
 				for row in engine:select(select_extradata_sql, host, username or "", self.store, "") do
-					extradata = deserialize(row[1], row[2]);
+					extradata, err = deserialize(row[1], row[2]);
+					assert(extradata ~= nil, err);
 				end
 				engine:delete(delete_sql, host, username or "", self.store, "");
 				extradata[key] = data;
@@ -356,7 +365,9 @@ function archive_store:find(username, query)
 	return function()
 		local row = result();
 		if row ~= nil then
-			return row[1], deserialize(row[2], row[3]), row[4], row[5];
+			local value, err = deserialize(row[2], row[3]);
+			assert(value ~= nil, err);
+			return row[1], value, row[4], row[5];
 		end
 	end, total;
 end
@@ -374,7 +385,35 @@ function archive_store:delete(username, query)
 		end
 		archive_where(query, args, where);
 		archive_where_id_range(query, args, where);
-		sql_query = sql_query:format(t_concat(where, " AND "));
+		if query.truncate == nil then
+			sql_query = sql_query:format(t_concat(where, " AND "));
+		else
+			args[#args+1] = query.truncate;
+			local unlimited = "ALL";
+			if engine.params.driver == "SQLite3" then
+				sql_query = [[
+				DELETE FROM "prosodyarchive"
+				WHERE %s
+				ORDER BY "sort_id" %s
+				LIMIT %s OFFSET ?;
+				]];
+				unlimited = "-1";
+			else
+				sql_query = [[
+				DELETE FROM "prosodyarchive"
+				WHERE "sort_id" IN (
+					SELECT "sort_id" FROM "prosodyarchive"
+					WHERE %s
+					ORDER BY "sort_id" %s
+					LIMIT %s OFFSET ?
+				);]];
+				if engine.params.driver == "MySQL" then
+					unlimited = "18446744073709551615";
+				end
+			end
+			sql_query = string.format(sql_query, t_concat(where, " AND "),
+				query.reverse and "ASC" or "DESC", unlimited);
+		end
 		return engine:delete(sql_query, unpack(args));
 	end);
 	return ok and stmt:affected(), stmt;
@@ -427,7 +466,7 @@ local function create_table(engine, name) -- luacheck: ignore 431/engine
 	local Table, Column, Index = sql.Table, sql.Column, sql.Index;
 
 	local ProsodyTable = Table {
-		name= name or "prosody";
+		name = "prosody";
 		Column { name="host", type="TEXT", nullable=false };
 		Column { name="user", type="TEXT", nullable=false };
 		Column { name="store", type="TEXT", nullable=false };
@@ -477,7 +516,7 @@ local function upgrade_table(engine, params, apply_changes) -- luacheck: ignore 
 		end);
 		if not success then
 			module:log("error", "Failed to check/upgrade database schema (%s), please see "
-				.."http://prosody.im/doc/mysql for help",
+				.."https://prosody.im/doc/mysql for help",
 				err or "unknown error");
 			return false;
 		end
