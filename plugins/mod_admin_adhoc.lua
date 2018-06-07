@@ -3,6 +3,7 @@
 -- This file is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
+-- luacheck: ignore 212/self 212/data 212/state 412/err
 
 local _G = _G;
 
@@ -95,7 +96,12 @@ local change_user_password_command_handler = adhoc_simple(change_user_password_l
 	end
 	local username, host, resource = jid.split(fields.accountjid);
 	if module_host ~= host then
-		return { status = "completed", error = { message = "Trying to change the password of a user on " .. host .. " but command was sent to " .. module_host}};
+		return {
+			status = "completed",
+			error = {
+				message = "Trying to change the password of a user on " .. host .. " but command was sent to " .. module_host
+			}
+		};
 	end
 	if usermanager_user_exists(username, host) and usermanager_set_password(username, fields.password, host, nil) then
 		return { status = "completed", info = "Password successfully changed" };
@@ -207,8 +213,8 @@ local get_user_password_handler = adhoc_simple(get_user_password_layout, functio
 		return generate_error_message(err);
 	end
 	local user, host, resource = jid.split(fields.accountjid);
-	local accountjid = "";
-	local password = "";
+	local accountjid;
+	local password;
 	if host ~= module_host then
 		return { status = "completed", error = { message = "Tried to get password for a user on " .. host .. " but command was sent to " .. module_host } };
 	elseif usermanager_user_exists(user, host) then
@@ -246,15 +252,15 @@ local get_user_roster_handler = adhoc_simple(get_user_roster_layout, function(fi
 	local roster = rm_load_roster(user, host);
 
 	local query = st.stanza("query", { xmlns = "jabber:iq:roster" });
-	for jid in pairs(roster) do
-		if jid then
+	for contact_jid in pairs(roster) do
+		if contact_jid then
 			query:tag("item", {
-				jid = jid,
-				subscription = roster[jid].subscription,
-				ask = roster[jid].ask,
-				name = roster[jid].name,
+				jid = contact_jid,
+				subscription = roster[contact_jid].subscription,
+				ask = roster[contact_jid].ask,
+				name = roster[contact_jid].name,
 			});
-			for group in pairs(roster[jid].groups) do
+			for group in pairs(roster[contact_jid].groups) do
 				query:tag("group"):text(group):up();
 			end
 			query:up();
@@ -299,8 +305,8 @@ local get_user_stats_handler = adhoc_simple(get_user_stats_layout, function(fiel
 	local rostersize = 0;
 	local IPs = "";
 	local resources = "";
-	for jid in pairs(roster) do
-		if jid then
+	for contact_jid in pairs(roster) do
+		if contact_jid then
 			rostersize = rostersize + 1;
 		end
 	end
@@ -369,7 +375,7 @@ local list_s2s_this_result = dataforms_new {
 
 	{ name = "FORM_TYPE", type = "hidden", value = "http://prosody.im/protocol/s2s#list" };
 	{ name = "sessions", type = "text-multi", label = "Connections:" };
-	{ name = "num_in", type = "text-single", label = "#incomming connections:" };
+	{ name = "num_in", type = "text-single", label = "#incoming connections:" };
 	{ name = "num_out", type = "text-single", label = "#outgoing connections:" };
 };
 
