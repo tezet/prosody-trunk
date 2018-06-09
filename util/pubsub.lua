@@ -1,31 +1,70 @@
 local events = require "util.events";
 local cache = require "util.cache";
 
-local service = {};
-local service_mt = { __index = service };
+local service_mt = {};
 
-local default_config = { __index = {
-	itemstore = function (config) return cache.new(tonumber(config["pubsub#max_items"])) end;
+local default_config = {
+	itemstore = function (config, _) return cache.new(config["max_items"]) end;
 	broadcaster = function () end;
+	itemcheck = function () return true; end;
 	get_affiliation = function () end;
+	normalize_jid = function (jid) return jid; end;
 	capabilities = {};
-} };
-local default_node_config = { __index = {
-	["pubsub#max_items"] = "20";
-} };
+};
+local default_config_mt = { __index = default_config };
 
+local default_node_config = {
+	["persist_items"] = false;
+	["max_items"] = 20;
+};
+local default_node_config_mt = { __index = default_node_config };
+
+-- Storage helper functions
+
+local function load_node_from_store(nodestore, node_name)
+	local node = nodestore:get(node_name);
+	node.config = setmetatable(node.config or {}, default_node_config_mt);
+	return node;
+end
+
+local function save_node_to_store(nodestore, node)
+	return nodestore:set(node.name, {
+		name = node.name;
+		config = node.config;
+		subscribers = node.subscribers;
+		affiliations = node.affiliations;
+	});
+end
+
+-- Create and return a new service object
 local function new(config)
 	config = config or {};
-	return setmetatable({
-		config = setmetatable(config, default_config);
-		node_defaults = setmetatable(config.node_defaults or {}, default_node_config);
+
+	local service = setmetatable({
+		config = setmetatable(config, default_config_mt);
+		node_defaults = setmetatable(config.node_defaults or {}, default_node_config_mt);
 		affiliations = {};
 		subscriptions = {};
 		nodes = {};
 		data = {};
 		events = events.new();
 	}, service_mt);
+
+	-- Load nodes from storage, if we have a store and it supports iterating over stored items
+	if config.nodestore and config.nodestore.users then
+		for node_name in config.nodestore:users() do
+			service.nodes[node_name] = load_node_from_store(config.nodestore, node_name);
+			service.data[node_name] = config.itemstore(service.nodes[node_name].config, node_name);
+		end
+	end
+
+	return service;
 end
+
+--- Service methods
+
+local service = {};
+service_mt.__index = service;
 
 function service:jids_equal(jid1, jid2)
 	local normalize = self.config.normalize_jid;
@@ -36,7 +75,8 @@ function service:may(node, actor, action)
 	if actor == true then return true; end
 
 	local node_obj = self.nodes[node];
-	local node_aff = node_obj and node_obj.affiliations[actor];
+	local node_aff = node_obj and (node_obj.affiliations[actor]
+	              or node_obj.affiliations[self.config.normalize_jid(actor)]);
 	local service_aff = self.affiliations[actor]
 	                 or self.config.get_affiliation(actor, node, action)
 	                 or "none";
@@ -176,18 +216,6 @@ function service:remove_subscription(node, actor, jid)
 	return true;
 end
 
-function service:remove_all_subscriptions(actor, jid)
-	local normal_jid = self.config.normalize_jid(jid);
-	local subs = self.subscriptions[normal_jid]
-	subs = subs and subs[jid];
-	if subs then
-		for node in pairs(subs) do
-			self:remove_subscription(node, true, jid);
-		end
-	end
-	return true;
-end
-
 function service:get_subscription(node, actor, jid)
 	-- Access checking
 	local cap;
@@ -223,14 +251,27 @@ function service:create(node, actor, options)
 		config = setmetatable(options or {}, {__index=self.node_defaults});
 		affiliations = {};
 	};
-	self.data[node] = self.config.itemstore(self.nodes[node].config);
-	self.events.fire_event("node-created", { node = node, actor = actor });
-	local ok, err = self:set_affiliation(node, true, actor, "owner");
-	if not ok then
-		self.nodes[node] = nil;
-		self.data[node] = nil;
+
+	if self.config.nodestore then
+		local ok, err = save_node_to_store(self.config.nodestore, self.nodes[node]);
+		if not ok then
+			self.nodes[node] = nil;
+			return ok, err;
+		end
 	end
-	return ok, err;
+
+	self.data[node] = self.config.itemstore(self.nodes[node].config, node);
+	self.events.fire_event("node-created", { node = node, actor = actor });
+	if actor ~= true then
+		local ok, err = self:set_affiliation(node, true, actor, "owner");
+		if not ok then
+			self.nodes[node] = nil;
+			self.data[node] = nil;
+			return ok, err;
+		end
+	end
+
+	return true;
 end
 
 function service:delete(node, actor)
@@ -244,9 +285,12 @@ function service:delete(node, actor)
 		return false, "item-not-found";
 	end
 	self.nodes[node] = nil;
+	if self.data[node] and self.data[node].clear then
+		self.data[node]:clear();
+	end
 	self.data[node] = nil;
 	self.events.fire_event("node-deleted", { node = node, actor = actor });
-	self.config.broadcaster("delete", node, node_obj.subscribers);
+	self.config.broadcaster("delete", node, node_obj.subscribers, nil, actor, node_obj, self);
 	return true;
 end
 
@@ -267,13 +311,17 @@ function service:publish(node, actor, id, item)
 		end
 		node_obj = self.nodes[node];
 	end
+	if not self.config.itemcheck(item) then
+		return nil, "internal-server-error";
+	end
 	local node_data = self.data[node];
 	local ok = node_data:set(id, item);
 	if not ok then
 		return nil, "internal-server-error";
 	end
+	if type(ok) == "string" then id = ok; end
 	self.events.fire_event("item-published", { node = node, actor = actor, id = id, item = item });
-	self.config.broadcaster("items", node, node_obj.subscribers, item, actor);
+	self.config.broadcaster("items", node, node_obj.subscribers, item, actor, node_obj, self);
 	return true;
 end
 
@@ -293,7 +341,7 @@ function service:retract(node, actor, id, retract)
 	end
 	self.events.fire_event("item-retracted", { node = node, actor = actor, id = id });
 	if retract then
-		self.config.broadcaster("items", node, node_obj.subscribers, retract);
+		self.config.broadcaster("items", node, node_obj.subscribers, retract, actor, node_obj, self);
 	end
 	return true
 end
@@ -308,10 +356,14 @@ function service:purge(node, actor, notify)
 	if not node_obj then
 		return false, "item-not-found";
 	end
-	self.data[node] = self.config.itemstore(self.nodes[node].config);
+	if self.data[node] and self.data[node].clear then
+		self.data[node]:clear()
+	else
+		self.data[node] = self.config.itemstore(self.nodes[node].config, node);
+	end
 	self.events.fire_event("node-purged", { node = node, actor = actor });
 	if notify then
-		self.config.broadcaster("purge", node, node_obj.subscribers);
+		self.config.broadcaster("purge", node, node_obj.subscribers, nil, actor, node_obj, self);
 	end
 	return true
 end
@@ -327,7 +379,11 @@ function service:get_items(node, actor, id)
 		return false, "item-not-found";
 	end
 	if id then -- Restrict results to a single specific item
-		return true, { id, [id] = self.data[node]:get(id) };
+		local with_id = self.data[node]:get(id);
+		if not with_id then
+			return true, { };
+		end
+		return true, { id, [id] = with_id };
 	else
 		local data = {}
 		for key, value in self.data[node]:items() do
@@ -336,6 +392,15 @@ function service:get_items(node, actor, id)
 		end
 		return true, data;
 	end
+end
+
+function service:get_last_item(node, actor)
+	-- Access checking
+	if not self:may(node, actor, "get_items") then
+		return false, "forbidden";
+	end
+	--
+	return true, self.data[node]:tail();
 end
 
 function service:get_nodes(actor)
@@ -421,14 +486,14 @@ function service:set_node_config(node, actor, new_config)
 		return false, "item-not-found";
 	end
 
-	for k,v in pairs(new_config) do
-		node_obj.config[k] = v;
+	if new_config["persist_items"] ~= node_obj.config["persist_items"] then
+		self.data[node] = self.config.itemstore(self.nodes[node].config, node);
+	elseif new_config["max_items"] ~= node_obj.config["max_items"] then
+		self.data[node]:resize(new_config["max_items"]);
 	end
-	local new_data = self.config.itemstore(self.nodes[node].config);
-	for key, value in self.data[node]:items() do
-		new_data:set(key, value);
-	end
-	self.data[node] = new_data;
+
+	node_obj.config = setmetatable(new_config, {__index=self.node_defaults});
+
 	return true;
 end
 
