@@ -8,12 +8,13 @@
 
 local setmetatable = setmetatable;
 local ipairs = ipairs;
-local tostring, type, next = tostring, type, next;
+local type, next = type, next;
 local t_concat = table.concat;
 local st = require "util.stanza";
 local jid_prep = require "util.jid".prep;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local xmlns_forms = 'jabber:x:data';
 
@@ -37,6 +38,10 @@ function form_t.form(layout, data, formtype)
 		-- Add field tag
 		form:tag("field", { type = field_type, var = field.name, label = field.label });
 
+		if field.desc then
+			form:text_tag("desc", field.desc);
+		end
+
 		local value = (data and data[field.name]) or field.value;
 
 		if value then
@@ -48,7 +53,7 @@ function form_t.form(layout, data, formtype)
 						:add_child(value)
 						:up();
 				else
-					form:tag("value"):text(tostring(value)):up();
+					form:tag("value"):text(value):up();
 				end
 			elseif field_type == "boolean" then
 				form:tag("value"):text((value and "1") or "0"):up();
@@ -78,7 +83,7 @@ function form_t.form(layout, data, formtype)
 								has_default = true;
 							end
 						else
-							form:tag("option", { label= val }):tag("value"):text(tostring(val)):up():up();
+							form:tag("option", { label= val }):tag("value"):text(val):up():up();
 						end
 					end
 				end
@@ -94,7 +99,7 @@ function form_t.form(layout, data, formtype)
 								form:tag("value"):text(val.value):up();
 							end
 						else
-							form:tag("option", { label= val }):tag("value"):text(tostring(val)):up():up();
+							form:tag("option", { label= val }):tag("value"):text(val):up():up();
 						end
 					end
 				end
@@ -248,8 +253,24 @@ field_readers["hidden"] =
 		return field_tag:get_child_text("value");
 	end
 
+
+local function get_form_type(form)
+	if not st.is_stanza(form) then
+		return nil, "not a stanza object";
+	elseif form.attr.xmlns ~= "jabber:x:data" or form.name ~= "x" then
+		return nil, "not a dataform element";
+	end
+	for field in form:childtags("field") do
+		if field.attr.var == "FORM_TYPE" then
+			return field:get_child_text("value");
+		end
+	end
+	return "";
+end
+
 return {
 	new = new;
+	get_type = get_form_type;
 };
 
 
