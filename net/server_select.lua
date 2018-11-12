@@ -424,9 +424,8 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 		bufferlen = bufferlen + #data
 		if bufferlen > maxsendlen then
 			_closelist[ handler ] = "send buffer exceeded"	 -- cannot close the client at the moment, have to wait to the end of the cycle
-			handler.write = idfalse -- don't write anymore
 			return false
-		elseif socket and not _sendlist[ socket ] then
+		elseif not nosend and socket and not _sendlist[ socket ] then
 			_sendlistlen = addsocket(_sendlist, socket, _sendlistlen)
 		end
 		bufferqueuelen = bufferqueuelen + 1
@@ -456,49 +455,57 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 		maxreadlen = readlen or maxreadlen
 		return bufferlen, maxreadlen, maxsendlen
 	end
-	--TODO: Deprecate
 	handler.lock_read = function (self, switch)
+		out_error( "server.lua, lock_read() is deprecated, use pause() and resume()" )
 		if switch == true then
-			local tmp = _readlistlen
-			_readlistlen = removesocket( _readlist, socket, _readlistlen )
-			_readtimes[ handler ] = nil
-			if _readlistlen ~= tmp then
-				noread = true
-			end
+			return self:pause()
 		elseif switch == false then
-			if noread then
-				noread = false
-				_readlistlen = addsocket(_readlist, socket, _readlistlen)
-				_readtimes[ handler ] = _currenttime
-			end
+			return self:resume()
 		end
 		return noread
 	end
 	handler.pause = function (self)
-		return self:lock_read(true);
+		local tmp = _readlistlen
+		_readlistlen = removesocket( _readlist, socket, _readlistlen )
+		_readtimes[ handler ] = nil
+		if _readlistlen ~= tmp then
+			noread = true
+		end
+		return noread;
 	end
 	handler.resume = function (self)
-		return self:lock_read(false);
+		if noread then
+			noread = false
+			_readlistlen = addsocket(_readlist, socket, _readlistlen)
+			_readtimes[ handler ] = _currenttime
+		end
+		return noread;
 	end
 	handler.lock = function( self, switch )
-		handler.lock_read (switch)
+		out_error( "server.lua, lock() is deprecated" )
+		handler.lock_read (self, switch)
 		if switch == true then
-			handler.write = idfalse
-			local tmp = _sendlistlen
-			_sendlistlen = removesocket( _sendlist, socket, _sendlistlen )
-			_writetimes[ handler ] = nil
-			if _sendlistlen ~= tmp then
-				nosend = true
-			end
+			handler.pause_writes (self)
 		elseif switch == false then
-			handler.write = write
-			if nosend then
-				nosend = false
-				write( "" )
-			end
+			handler.resume_writes (self)
 		end
 		return noread, nosend
 	end
+	handler.pause_writes = function (self)
+		local tmp = _sendlistlen
+		_sendlistlen = removesocket( _sendlist, socket, _sendlistlen )
+		_writetimes[ handler ] = nil
+		if _sendlistlen ~= tmp then
+			nosend = true
+		end
+	end
+	handler.resume_writes = function (self)
+		if nosend then
+			nosend = false
+			write( "" )
+		end
+	end
+
 	local _readbuffer = function( ) -- this function reads data
 		local buffer, err, part = receive( socket, pattern )	-- receive buffer with "pattern"
 		if not err or (err == "wantread" or err == "timeout") then -- received something
