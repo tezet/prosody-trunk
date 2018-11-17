@@ -253,6 +253,7 @@ end
 
 --TODO: Deprecate
 function interface_mt:lock_read(switch)
+	log("warn", ":lock_read is deprecated, use :pasue() and :resume()");
 	if switch then
 		return self:pause();
 	else
@@ -271,6 +272,19 @@ function interface_mt:resume()
 		return true;
 	end
 end
+
+function interface_mt:pause_writes()
+	return self:_lock(self.nointerface, self.noreading, true);
+end
+
+function interface_mt:resume_writes()
+	self:_lock(self.nointerface, self.noreading, false);
+	if self.writecallback and not self.eventwrite then
+		self.eventwrite = addevent( base, self.conn, EV_WRITE, self.writecallback, cfg.WRITE_TIMEOUT );  -- register callback
+		return true;
+	end
+end
+
 
 function interface_mt:counter(c)
 	if c then
