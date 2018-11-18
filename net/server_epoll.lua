@@ -106,9 +106,13 @@ local function runtimers(next_delay, min_wait)
 		end
 		local new_timeout = f(now);
 		if new_timeout then
-			-- Schedule for 'delay' from the time actually scheduled,
-			-- not from now, in order to prevent timer drift.
-			timer[1] = t + new_timeout;
+			-- Schedule for 'delay' from the time actually scheduled, not from now,
+			-- in order to prevent timer drift, unless it already drifted way out of sync.
+			if (t + new_timeout) > ( now - new_timeout ) then
+				timer[1] = t + new_timeout;
+			else
+				timer[1] = now + new_timeout;
+			end
 			resort_timers = true;
 		else
 			t_remove(timers, i);
@@ -409,8 +413,10 @@ function interface:write(data)
 	else
 		self.writebuffer = { data };
 	end
-	self:setwritetimeout();
-	self:set(nil, true);
+	if not self._write_lock then
+		self:setwritetimeout();
+		self:set(nil, true);
+	end
 	return #data;
 end
 interface.send = interface.write;
@@ -590,11 +596,23 @@ function interface:pausefor(t)
 	end);
 end
 
+function interface:pause_writes()
+	self._write_lock = true;
+	self:setwritetimeout(false);
+	self:set(nil, false);
+end
+
+function interface:resume_writes()
+	self._write_lock = nil;
+	if self.writebuffer[1] then
+		self:setwritetimeout();
+		self:set(nil, true);
+	end
+end
+
 -- Connected!
 function interface:onconnect()
-	if self.conn and not self.peername and self.conn.getpeername then
-		self.peername, self.peerport = self.conn:getpeername();
-	end
+	self:updatenames();
 	self.onconnect = noop;
 	self:on("connect");
 end
